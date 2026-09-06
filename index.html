@@ -269,6 +269,35 @@
   .tx-amount.income{ color:var(--jade); }
   .tx-amount.expense{ color:var(--seal); }
 
+  .tx-discount-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin:-2px 0 8px 30px;
+    padding:6px 12px;
+    background:rgba(47,111,176,0.06);
+    border:1px solid rgba(47,111,176,0.14);
+    border-radius:10px;
+    cursor:pointer;
+  }
+  .tx-discount-row:active{ background:rgba(47,111,176,0.12); }
+  .tx-discount-dot{
+    width:6px; height:6px;
+    border-radius:50%;
+    flex-shrink:0;
+  }
+  .tx-discount-name{
+    flex:1;
+    font-size:12px;
+    font-weight:600;
+    color:var(--ink-soft);
+  }
+  .tx-discount-amount{
+    font-size:12.5px;
+    font-weight:700;
+    color:var(--jade);
+  }
+
   .empty-state{
     text-align:center;
     padding:48px 24px;
@@ -742,6 +771,20 @@
   </div>
 </div>
 
+<!-- ============ CATEGORY DETAIL SHEET (stats drill-down) ============ -->
+<div class="overlay" id="catDetailOverlay"></div>
+<div class="sheet" id="catDetailSheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-head">
+    <h3 id="catDetailTitle">카테고리</h3>
+    <button class="close" id="catDetailClose">✕</button>
+  </div>
+  <div class="sheet-body">
+    <div style="font-size:13px; color:var(--ink-soft); font-weight:600; margin-bottom:14px;" id="catDetailSum"></div>
+    <div id="catDetailList"></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -840,6 +883,22 @@
   var viewMonth = { y: current.getFullYear(), m: current.getMonth() }; // home
   var statsMonth = { y: current.getFullYear(), m: current.getMonth() };
 
+  (function restoreLastViewMonth(){
+    var saved = localStorage.getItem('gagyebu_last_view_ym');
+    if(saved){
+      var parts = saved.split('-');
+      var y = parseInt(parts[0], 10), m = parseInt(parts[1], 10) - 1;
+      if(!isNaN(y) && !isNaN(m)){
+        viewMonth = { y: y, m: m };
+        statsMonth = { y: y, m: m };
+      }
+    }
+  })();
+
+  function saveViewMonth(){
+    localStorage.setItem('gagyebu_last_view_ym', viewMonth.y + '-' + pad2(viewMonth.m+1));
+  }
+
   function monthLabel(vm){
     return (vm.m+1) + '월';
   }
@@ -894,9 +953,15 @@
       return b.createdAt - a.createdAt;
     });
 
+    var subByParent = {};
+    txs.forEach(function(t){
+      if(t.linkedFrom) subByParent[t.linkedFrom] = t;
+    });
+
     var groups = {};
     var order = [];
     txs.forEach(function(t){
+      if(t.linkedFrom) return; // rendered nested under its parent instead
       if(!groups[t.date]){ groups[t.date] = []; order.push(t.date); }
       groups[t.date].push(t);
     });
@@ -924,6 +989,19 @@
           '<span class="tx-amount ' + t.type + '">' + (t.type==='income'?'+':'-') + fmtWon(t.amount) + '</span>';
         row.addEventListener('click', function(){ openTxSheet(t.id); });
         groupDiv.appendChild(row);
+
+        var disc = subByParent[t.id];
+        if(disc){
+          var discCat = catById(disc.categoryId);
+          var discRow = document.createElement('div');
+          discRow.className = 'tx-discount-row';
+          discRow.innerHTML =
+            '<span class="tx-discount-dot" style="background:' + (discCat ? discCat.color : '#999') + '"></span>' +
+            '<span class="tx-discount-name">' + (discCat ? discCat.name : '할인') + '</span>' +
+            '<span class="tx-discount-amount">+' + fmtWon(disc.amount) + '</span>';
+          discRow.addEventListener('click', function(e){ e.stopPropagation(); openTxSheet(t.id); });
+          groupDiv.appendChild(discRow);
+        }
       });
       listEl.appendChild(groupDiv);
     });
@@ -965,6 +1043,7 @@
       var widthPct = max ? Math.round((r.amount/max)*100) : 0;
       var item = document.createElement('div');
       item.className = 'bar-item';
+      item.style.cursor = 'pointer';
       item.innerHTML =
         '<div class="bar-top">' +
           '<span class="name"><span class="dot" style="background:' + r.cat.color + '"></span>' + r.cat.name + '</span>' +
@@ -972,8 +1051,52 @@
         '</div>' +
         '<div class="bar-track"><div class="bar-fill" style="width:' + widthPct + '%; background:' + r.cat.color + '"></div></div>' +
         '<div class="bar-pct">' + pct + '%</div>';
+      item.addEventListener('click', function(){
+        openCatDetailSheet(r.cat, txs.filter(function(t){ return t.categoryId === r.cat.id; }));
+      });
       el.appendChild(item);
     });
+  }
+
+  /* ---------------- Category detail sheet (stats drill-down) ---------------- */
+  var catDetailOverlay, catDetailSheet;
+  function openCatDetailSheet(cat, txList){
+    if(!catDetailOverlay){
+      catDetailOverlay = document.getElementById('catDetailOverlay');
+      catDetailSheet = document.getElementById('catDetailSheet');
+      document.getElementById('catDetailClose').addEventListener('click', closeCatDetailSheet);
+      catDetailOverlay.addEventListener('click', closeCatDetailSheet);
+    }
+    document.getElementById('catDetailTitle').textContent = cat.name;
+    var sum = txList.reduce(function(s,t){ return s + t.amount; }, 0);
+    document.getElementById('catDetailSum').textContent = fmtWon(sum) + ' · ' + txList.length + '건';
+
+    var listEl = document.getElementById('catDetailList');
+    listEl.innerHTML = '';
+    txList.slice().sort(function(a,b){ return a.date < b.date ? 1 : -1; }).forEach(function(t){
+      var d = new Date(t.date + 'T00:00:00');
+      var row = document.createElement('div');
+      row.className = 'tx-row';
+      row.innerHTML =
+        '<span class="tx-dot" style="background:' + cat.color + '"></span>' +
+        '<span class="tx-info">' +
+          '<div class="tx-cat">' + (d.getMonth()+1) + '월 ' + d.getDate() + '일</div>' +
+          (t.memo ? '<div class="tx-memo">' + escapeHtml(t.memo) + '</div>' : '') +
+        '</span>' +
+        '<span class="tx-amount ' + t.type + '">' + (t.type==='income'?'+':'-') + fmtWon(t.amount) + '</span>';
+      row.addEventListener('click', function(){
+        closeCatDetailSheet();
+        openTxSheet(t.linkedFrom || t.id);
+      });
+      listEl.appendChild(row);
+    });
+
+    catDetailOverlay.classList.add('open');
+    catDetailSheet.classList.add('open');
+  }
+  function closeCatDetailSheet(){
+    catDetailOverlay.classList.remove('open');
+    catDetailSheet.classList.remove('open');
   }
 
   /* ---------------- Render: Settings ---------------- */
@@ -1036,16 +1159,16 @@
   });
 
   document.getElementById('prevMonth').addEventListener('click', function(){
-    viewMonth.m--; if(viewMonth.m<0){ viewMonth.m=11; viewMonth.y--; } renderHome();
+    viewMonth.m--; if(viewMonth.m<0){ viewMonth.m=11; viewMonth.y--; } saveViewMonth(); renderHome();
   });
   document.getElementById('nextMonth').addEventListener('click', function(){
-    viewMonth.m++; if(viewMonth.m>11){ viewMonth.m=0; viewMonth.y++; } renderHome();
+    viewMonth.m++; if(viewMonth.m>11){ viewMonth.m=0; viewMonth.y++; } saveViewMonth(); renderHome();
   });
   document.getElementById('prevYear').addEventListener('click', function(){
-    viewMonth.y--; renderHome();
+    viewMonth.y--; saveViewMonth(); renderHome();
   });
   document.getElementById('nextYear').addEventListener('click', function(){
-    viewMonth.y++; renderHome();
+    viewMonth.y++; saveViewMonth(); renderHome();
   });
   document.getElementById('statsPrevMonth').addEventListener('click', function(){
     statsMonth.m--; if(statsMonth.m<0){ statsMonth.m=11; statsMonth.y--; } renderStats();
