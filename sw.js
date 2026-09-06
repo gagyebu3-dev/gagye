@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gagyebu-v11';
+const CACHE_NAME = 'gagyebu-v12';
 const CORE_ASSETS = [
   './',
   './manifest.json?v=2',
